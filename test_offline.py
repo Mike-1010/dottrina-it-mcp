@@ -262,6 +262,14 @@ def test_parsers():
               '<section><div><a href="/articolo/w">La sottrazione internazionale di minori</a>'
               '<span>23/09/2026</span></div></section>')
     assert P.qg_parse_list(qg_two)[0]["data"] == "2026-09-23"
+    # data in un blocco 'meta' fratello del blocco con titolo e sommario
+    qg_meta = ('<div class="lista"><article><div class="meta"><span>23/09/2026</span></div>'
+               '<div class="corpo"><a href="/articolo/v">La sottrazione internazionale di minori</a>'
+               '<p>Sui criteri della Convenzione dell\'Aja del 25 ottobre 1980</p></div></article>'
+               '<article><div class="meta"><span>21/09/2026</span></div><div class="corpo">'
+               '<a href="/articolo/u">Comunicazione istituzionale</a></div></article></div>')
+    got = {i["url"].rsplit("/", 1)[-1]: i["data"] for i in P.qg_parse_list(qg_meta)}
+    assert got == {"v": "2026-09-23", "u": "2026-09-21"}, got
     assert P.rank(arts, "riciclaggio") and "51078" in P.rank(arts, "riciclaggio")[0]["url"]
 
     assert P.ap_access(AP_OPEN)["open_access"] and "DownloadArticolo" in P.ap_access(AP_OPEN)["download"]

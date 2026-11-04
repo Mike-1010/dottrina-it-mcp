@@ -137,17 +137,29 @@ def _container(a: Tag, pattern: re.Pattern, max_up: int = 5) -> Tag:
     return best
 
 
+def _sibling_dates(box: Tag, pattern: re.Pattern, max_sib: int = 4) -> list[tuple[int, str]]:
+    """Date negli elementi accanto al contenitore (es. <dt> titolo + <dd> data in Joomla, o
+    blocco 'meta' separato dal blocco del titolo). Restituisce (priorità, data)."""
+    out = []
+    for sibs in (box.find_next_siblings(), box.find_previous_siblings()):
+        for i, sib in enumerate(sibs):
+            if i >= max_sib:
+                break
+            if any(pattern.search(x.get("href", "")) for x in sib.find_all("a", href=True)):
+                break
+            t = clean(sib.get_text(" "))
+            m = _RE_DATE_NUM.search(t)
+            for prio, d in ((0, parse_labeled_date(t)), (1, parse_date(m.group(0)) if m else None),
+                            (3, parse_date(t))):
+                if d:
+                    out.append((prio, d))
+                    break
+    return out
+
+
 def _date_in_siblings(box: Tag, pattern: re.Pattern, max_sib: int = 4) -> str | None:
-    """Data negli elementi che seguono il contenitore (es. <dt> titolo + <dd> data in Joomla)."""
-    for i, sib in enumerate(box.find_next_siblings()):
-        if i >= max_sib:
-            break
-        if any(pattern.search(x.get("href", "")) for x in sib.find_all("a", href=True)):
-            break
-        d = parse_date(clean(sib.get_text(" ")))
-        if d:
-            return d
-    return None
+    c = _sibling_dates(box, pattern, max_sib)
+    return min(c)[1] if c else None
 
 
 def _anchor_title(a: Tag) -> str:
@@ -158,7 +170,8 @@ def _anchor_title(a: Tag) -> str:
 
 
 def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
-             tipo_fn, author_pattern: re.Pattern | None = None) -> list[dict]:
+             tipo_fn, author_pattern: re.Pattern | None = None,
+             min_year: int | None = None) -> list[dict]:
     """Raccoglie gli elementi di un elenco: un elemento per URL, con il titolo più lungo."""
     soup = _soup(html)
     items: dict[str, dict] = {}
@@ -198,13 +211,16 @@ def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
         m = _RE_DATE_NUM.search(rest)
         cands = it.setdefault("_dcand", [])
         for prio, d in ((0, parse_labeled_date(rest)), (1, parse_date(m.group(0)) if m else None),
-                        (2, parse_date(rest)), (3, _date_in_siblings(box, pattern))):
+                        (2, parse_date(rest))):
             if d:
                 cands.append((prio, d))
                 break
+        cands.extend(_sibling_dates(box, pattern))
     out = []
     for it in items.values():
         cands = it.pop("_dcand", [])
+        if min_year:  # date anteriori alla nascita della rivista online: citate nel testo, non di pubblicazione
+            cands = [c for c in cands if int(c[1][:4]) >= min_year]
         if not it["data"] and cands:
             it["data"] = min(cands)[1]
         if not it["titolo"]:
@@ -240,7 +256,7 @@ def sp_items_from_sitemap(xml: str) -> list[dict]:
 
 
 def sp_parse_list(html: str) -> list[dict]:
-    return _collect(html, SP_BASE, _SP_ITEM, "sistemapenale", sp_tipo, _SP_AUTH)
+    return _collect(html, SP_BASE, _SP_ITEM, "sistemapenale", sp_tipo, _SP_AUTH, min_year=2019)
 
 
 # ------------------------------------------------------------------ Questione Giustizia
@@ -250,7 +266,8 @@ _QG_AUTH = re.compile(r"/autore/[^/?#]+")
 
 
 def qg_parse_list(html: str) -> list[dict]:
-    return _collect(html, QG_BASE, _QG_ITEM, "questionegiustizia", lambda u: "articolo", _QG_AUTH)
+    return _collect(html, QG_BASE, _QG_ITEM, "questionegiustizia", lambda u: "articolo", _QG_AUTH,
+                    min_year=2010)
 
 
 # ------------------------------------------------------------------ Archivio Penale
@@ -276,7 +293,7 @@ def ap_parse_fascicoli(html: str) -> list[dict]:
 
 
 def ap_parse_articles(html: str, fascicolo: str | None = None) -> list[dict]:
-    items = _collect(html, AP_BASE, _AP_ART, "archiviopenale", lambda u: "articolo")
+    items = _collect(html, AP_BASE, _AP_ART, "archiviopenale", lambda u: "articolo", min_year=2014)
     soup = _soup(html)
     # autore: nelle pagine dei fascicoli il nome segue/precede il titolo nel contenitore
     for it in items:
