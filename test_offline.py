@@ -252,6 +252,11 @@ def test_parsers():
     q = P.qg_parse_list(qg_old)[0]
     assert q["data"] == "2026-11-02" and q["autori"] == ["Mario Rossi"], q
     assert P.clean_title("F. Lazzarini | Titolo | Sistema Penale | SP") == "Titolo"
+    # data dentro il link della categoria (struttura possibile di Questione Giustizia)
+    qg_in_link = ('<div><a href="/articolo/z">Leggi e istituzioni 04/11/2026</a>'
+                  '<a href="/articolo/z">Stipendi dei magistrati: il governo riduce l\'adeguamento</a></div>')
+    assert P.qg_parse_list(qg_in_link)[0]["data"] == "2026-11-04"
+    assert P.rank(arts, "riciclaggio") and "51078" in P.rank(arts, "riciclaggio")[0]["url"]
 
     assert P.ap_access(AP_OPEN)["open_access"] and "DownloadArticolo" in P.ap_access(AP_OPEN)["download"]
     paid = P.ap_access(AP_PAID)

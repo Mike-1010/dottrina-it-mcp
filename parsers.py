@@ -189,13 +189,15 @@ def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
             if n not in it["autori"]:
                 it["autori"].append(n)
         if not it["data"]:
-            # la data va cercata fuori dal titolo (i titoli citano spesso date di decisioni o leggi)
+            # la data va cercata fuori dal titolo (i titoli citano spesso date di decisioni o
+            # leggi); ordine: data con etichetta, data numerica gg/mm/aaaa, data in lettere
             rest = box_text
-            for a2 in box.find_all("a", href=True):
-                if pattern.search(a2.get("href", "")):
-                    rest = rest.replace(clean(a2.get_text(" ")), " ")
-            it["data"] = (parse_labeled_date(rest) or parse_date(rest)
-                          or _date_in_siblings(box, pattern))
+            for t in sorted({title, it["titolo"]}, key=len, reverse=True):
+                if len(t) > 15:
+                    rest = rest.replace(t, " ")
+            m = _RE_DATE_NUM.search(rest)
+            it["data"] = (parse_labeled_date(rest) or (parse_date(m.group(0)) if m else None)
+                          or parse_date(rest) or _date_in_siblings(box, pattern))
     out = []
     for it in items.values():
         if not it["titolo"]:
@@ -408,7 +410,11 @@ def score(item: dict, toks: list[str]) -> float:
     for w in norm(hay).split():
         words.add(w)
         words.add(stem(w))
-    hit = sum(1 for t in toks if t in words or any(w.startswith(t) for w in words if len(t) >= 5))
+    # corrispondenza: parola uguale, prefisso (>= 5 lettere) o parola composta che la contiene
+    # (>= 6 lettere: "riciclaggio" trova "antiriciclaggio")
+    hit = sum(1 for t in toks if t in words
+              or (len(t) >= 5 and any(w.startswith(t) for w in words))
+              or (len(t) >= 6 and any(t in w for w in words)))
     return hit / len(toks)
 
 
