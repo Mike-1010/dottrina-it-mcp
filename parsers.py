@@ -188,18 +188,25 @@ def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
         for n in autori:
             if n not in it["autori"]:
                 it["autori"].append(n)
-        if not it["data"]:
-            # la data va cercata fuori dal titolo (i titoli citano spesso date di decisioni o
-            # leggi); ordine: data con etichetta, data numerica gg/mm/aaaa, data in lettere
-            rest = box_text
-            for t in sorted({title, it["titolo"]}, key=len, reverse=True):
-                if len(t) > 15:
-                    rest = rest.replace(t, " ")
-            m = _RE_DATE_NUM.search(rest)
-            it["data"] = (parse_labeled_date(rest) or (parse_date(m.group(0)) if m else None)
-                          or parse_date(rest) or _date_in_siblings(box, pattern))
+        # la data va cercata fuori dal titolo (i titoli e gli estratti citano spesso date di
+        # decisioni, leggi o convenzioni). Si raccolgono i candidati da tutte le occorrenze del
+        # link e si sceglie per affidabilità: etichetta > gg/mm/aaaa > data in lettere.
+        rest = box_text
+        for t in sorted({title, it["titolo"]}, key=len, reverse=True):
+            if len(t) > 15:
+                rest = rest.replace(t, " ")
+        m = _RE_DATE_NUM.search(rest)
+        cands = it.setdefault("_dcand", [])
+        for prio, d in ((0, parse_labeled_date(rest)), (1, parse_date(m.group(0)) if m else None),
+                        (2, parse_date(rest)), (3, _date_in_siblings(box, pattern))):
+            if d:
+                cands.append((prio, d))
+                break
     out = []
     for it in items.values():
+        cands = it.pop("_dcand", [])
+        if not it["data"] and cands:
+            it["data"] = min(cands)[1]
         if not it["titolo"]:
             it["titolo"] = humanize_slug(it["url"])
         out.append(it)

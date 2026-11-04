@@ -256,6 +256,12 @@ def test_parsers():
     qg_in_link = ('<div><a href="/articolo/z">Leggi e istituzioni 04/11/2026</a>'
                   '<a href="/articolo/z">Stipendi dei magistrati: il governo riduce l\'adeguamento</a></div>')
     assert P.qg_parse_list(qg_in_link)[0]["data"] == "2026-11-04"
+    # stesso articolo in evidenza (estratto con data della Convenzione) e in elenco (con data)
+    qg_two = ('<section><div><a href="/articolo/w">La sottrazione internazionale di minori</a>'
+              '<p>Convenzione dell\'Aja del 25 ottobre 1980</p></div></section>'
+              '<section><div><a href="/articolo/w">La sottrazione internazionale di minori</a>'
+              '<span>23/09/2026</span></div></section>')
+    assert P.qg_parse_list(qg_two)[0]["data"] == "2026-09-23"
     assert P.rank(arts, "riciclaggio") and "51078" in P.rank(arts, "riciclaggio")[0]["url"]
 
     assert P.ap_access(AP_OPEN)["open_access"] and "DownloadArticolo" in P.ap_access(AP_OPEN)["download"]

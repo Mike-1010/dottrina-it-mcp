@@ -5,7 +5,7 @@ Verifiche del 04/11/2026, svolte leggendo robots.txt, pagine ed elenchi pubblici
 """
 import os
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 
 # Identificati in modo onesto. Per aggiungere un contatto imposta DOTTRINA_UA su Render
 # (es. "dottrina-it-mcp/0.1 (uso professionale; contatto: indirizzo@studio.it)").
