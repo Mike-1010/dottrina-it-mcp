@@ -79,6 +79,38 @@ def parse_date(text: str | None) -> str | None:
     return None
 
 
+_RE_LABEL_DATE = re.compile(
+    r"(?:pubblicat[oa]|data di pubblicazione|creat[oa]|pubblicazione)\s*(?:il|:)?\s*:?\s*"
+    r"(\d{1,2}(?:\s+[A-Za-zÀ-ÿ]+\s+|[/.]\d{1,2}[/.])(?:19|20)\d{2})", re.I)
+_RE_FASCICOLO = re.compile(r"fascicolo\s*n[°º.]?\s*(\d{1,2}\s*/\s*(?:19|20)\d{2})", re.I)
+
+
+def parse_labeled_date(text: str | None) -> str | None:
+    """Data preceduta da un'etichetta di pubblicazione ('Pubblicato:', 'Data di pubblicazione')."""
+    m = _RE_LABEL_DATE.search(text or "")
+    return parse_date(m.group(1)) if m else None
+
+
+def parse_fascicolo(text: str | None) -> str | None:
+    m = _RE_FASCICOLO.search(text or "")
+    return re.sub(r"\s+", "", m.group(1)) if m else None
+
+
+def clean_author(name: str) -> str:
+    return clean(re.sub(r"^(a cura di|di)\s+", "", clean(name), flags=re.I))
+
+
+def clean_title(title: str | None) -> str | None:
+    """Toglie dal titolo della pagina il nome della rivista e, per Sistema Penale, l'autore."""
+    if not title:
+        return title
+    t = re.sub(r"\s*[|\-–]\s*(Sistema Penale(\s*\|\s*SP)?|Archivio Penale|Questione Giustizia|"
+               r"Judicium|Rivista AIC|Persona e Mercato)\s*$", "", clean(title), flags=re.I)
+    t = re.sub(r"\s*\|\s*SP\s*$", "", t)
+    t = re.sub(r"^[A-Z]\.(\s*[A-Z]\.)*\s*[A-Za-zÀ-ÿ'’ ]{2,40}\s*\|\s*", "", t)  # "F. Lazzarini | ..."
+    return t
+
+
 def humanize_slug(url: str) -> str:
     slug = unquote(urlparse(url).path.rstrip("/").split("/")[-1])
     return clean(slug.replace("-", " ")).capitalize()
@@ -144,7 +176,7 @@ def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
         if author_pattern is not None:
             for x in box.find_all("a", href=True):
                 if author_pattern.search(x["href"]):
-                    n = clean(x.get_text(" "))
+                    n = clean_author(x.get_text(" "))
                     if n and n.lower() not in ("di", "a cura di") and n not in autori:
                         autori.append(n)
         it = items.get(url)
@@ -157,7 +189,13 @@ def _collect(html: str, base: str, pattern: re.Pattern, fonte: str,
             if n not in it["autori"]:
                 it["autori"].append(n)
         if not it["data"]:
-            it["data"] = parse_date(box_text) or _date_in_siblings(box, pattern)
+            # la data va cercata fuori dal titolo (i titoli citano spesso date di decisioni o leggi)
+            rest = box_text
+            for a2 in box.find_all("a", href=True):
+                if pattern.search(a2.get("href", "")):
+                    rest = rest.replace(clean(a2.get_text(" ")), " ")
+            it["data"] = (parse_labeled_date(rest) or parse_date(rest)
+                          or _date_in_siblings(box, pattern))
     out = []
     for it in items.values():
         if not it["titolo"]:
@@ -253,8 +291,12 @@ def ap_parse_contenuti(html: str, sezione: str | None = None) -> list[dict]:
     for it in items:
         if sezione:
             it["sezione"] = sezione
-        if not it["data"]:
-            it["data"] = parse_date(it["titolo"])
+        # la data nel titolo è quella della decisione, non della pubblicazione
+        d = parse_date(it["titolo"])
+        if d:
+            it["data_decisione"] = d
+            if it["data"] == d:
+                it["data"] = None
     return items
 
 
@@ -277,7 +319,20 @@ _AIC_AUTH = re.compile(r"/it/rivista/ultimi-contributi-pubblicati/[^/?#]+/?$")
 
 def aic_parse_list(html: str) -> list[dict]:
     items = _collect(html, AIC_BASE, _AIC_ITEM, "rivistaaic", lambda u: "contributo")
+    soup = _soup(html)
     for it in items:
+        # nei risultati di Rivista AIC il testo vicino al titolo è un estratto dell'abstract:
+        # si accetta solo una data con etichetta ("Creato:", "Pubblicato:")
+        it["data"] = None
+        a = soup.find("a", href=lambda h: h and urljoin(AIC_BASE + "/", h).split("#")[0] == it["url"])
+        if a is not None:
+            box = _container(a, _AIC_ITEM)
+            texts = [clean(box.get_text(" "))] + [clean(s.get_text(" ")) for s in box.find_next_siblings()[:4]]
+            for t in texts:
+                d = parse_labeled_date(t)
+                if d:
+                    it["data"] = d
+                    break
         if not it["autori"]:
             seg = unquote(urlparse(it["url"]).path.rstrip("/").split("/")[-2])
             it["autori"] = [clean(seg.replace("-", " ")).title()]
@@ -371,6 +426,8 @@ def rank(items: list[dict], query: str, autore: str | None = None, anno: int | N
                 continue
         s = score(it, toks) if toks else 1.0
         need = soglia if soglia is not None else (1.0 if len(toks) <= 2 else 0.6)
+        if it.get("_live"):
+            need = 0.0  # risultati della ricerca interna del sito: la pertinenza l'ha già valutata il sito
         if s >= need:
             out.append({**it, "_score": round(s, 2)})
     out.sort(key=lambda x: (x["_score"], x.get("data") or ""), reverse=True)

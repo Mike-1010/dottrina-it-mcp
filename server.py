@@ -282,11 +282,24 @@ async def _build_sistemapenale(ix: Index) -> list[dict]:
 
 async def _build_questionegiustizia(ix: Index) -> list[dict]:
     base = config.SOURCES["questionegiustizia"]["base"]
-    urls = []
+    items: list[dict] = []
     for cat in config.QG_CATEGORIES:
-        urls += [f"{base}/cat/{cat}"] + [f"{base}/cat/{cat}?page={n}"
-                                          for n in range(2, config.QG_PAGES + 1)]
-    return await _pages(ix, urls, P.qg_parse_list)
+        for n in range(1, config.QG_PAGES + 1):
+            url = f"{base}/cat/{cat}" + (f"?page={n}" if n > 1 else "")
+            try:
+                items += P.qg_parse_list(await fetch_text(url))
+                ix.pages_ok += 1
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404 and n > 1:
+                    break  # la categoria ha meno pagine: non è un errore
+                ix.pages_ko += 1
+                ix.error = _err(e)
+                break
+            except (httpx.HTTPError, PermissionError) as e:
+                ix.pages_ko += 1
+                ix.error = _err(e)
+                break
+    return items
 
 
 async def _build_archiviopenale(ix: Index) -> list[dict]:
@@ -384,7 +397,7 @@ async def _judicium(query: str | None, n: int = 20) -> list[dict]:
     if query:
         params["search"] = query
     data, _ = await fetch_json(f"{base}/wp-json/wp/v2/posts", params)
-    return [it for it in P.jud_items(data) if it["accesso_libero"]]
+    return [{**it, "_live": bool(query)} for it in P.jud_items(data) if it["accesso_libero"]]
 
 
 async def _aic(query: str | None) -> list[dict]:
@@ -394,7 +407,7 @@ async def _aic(query: str | None) -> list[dict]:
                                 {"searchword": query, "searchphrase": "all", "limit": 50})
     else:
         html = await fetch_text(f"{base}/it/rivista/ultimi-contributi-pubblicati")
-    return P.aic_parse_list(html)
+    return [{**it, "_live": bool(query)} for it in P.aic_parse_list(html)]
 
 
 def _resolve_fonti(fonti: list[str] | str | None) -> tuple[list[str], list[str]]:
@@ -420,7 +433,7 @@ def _public(it: dict) -> dict:
         "data": it.get("data"),
         "url": it.get("url"),
     }
-    for k in ("fascicolo", "sezione"):
+    for k in ("fascicolo", "sezione", "data_decisione"):
         if it.get(k):
             out[k] = it[k]
     if it.get("dal_sitemap"):
@@ -575,19 +588,22 @@ async def _leggi(url: str) -> dict:
     if sid == "sistemapenale":
         page = url if "out=print" in url else url.split("#")[0] + ("&" if "?" in url else "?") + "out=print"
         m = html_main(await fetch_text(page), url)
-        return {**base, "titolo": m["titolo"], "autori": m["autori"] or None, "data": m["data"],
-                "formato": "html", "_testo": m["testo"]}
+        head = m["testo"][:200]
+        return {**base, "titolo": P.clean_title(m["titolo"]), "autori": None,
+                "data": P.parse_date(head), "formato": "html", "_testo": m["testo"]}
 
     if sid == "questionegiustizia":
         m = html_main(await fetch_text(url), url)
-        return {**base, "titolo": m["titolo"], "autori": m["autori"] or None, "data": m["data"],
+        autori = [P.clean_author(a) for a in m["autori"]] or None
+        return {**base, "titolo": P.clean_title(m["titolo"]), "autori": autori, "data": m["data"],
                 "formato": "html", "_testo": m["testo"]}
 
     if sid == "archiviopenale":
         html = await fetch_text(url)
         m = html_main(html, url)
         acc = P.ap_access(html)
-        info = {**base, "titolo": m["titolo"], "autori": m["autori"] or None, "data": m["data"]}
+        info = {**base, "titolo": P.clean_title(m["titolo"]), "autori": m["autori"] or None,
+                "data": P.parse_labeled_date(m["testo"]) or m["data"]}
         is_article = "/articoli/" in url
         if is_article and not acc["open_access"]:
             return {**info, "non_letto": True, "abstract_o_pagina": m["testo"][:3000],
@@ -610,11 +626,19 @@ async def _leggi(url: str) -> dict:
             return {**base, "formato": kind, "_testo": body}
         html = await fetch_text(url)
         m = html_main(html, url)
-        info = {**base, "titolo": m["titolo"], "autori": m["autori"] or None, "data": m["data"]}
+        # i meta autore/data delle pagine AIC sono del sito, non del contributo: autore dall'URL
+        seg = urlparse(url).path.rstrip("/").split("/")
+        autore = [P.clean(seg[-2].replace("-", " ")).title()] if len(seg) >= 2 else None
+        info = {**base, "titolo": P.clean_title(m["titolo"]), "autori": autore, "data": None}
         pdf = P.aic_pdf_link(html)
         if pdf:
             kind, body = await fetch_doc(pdf)
             if kind == "pdf" and body:
+                head = body[:1500]
+                info["data"] = P.parse_labeled_date(head)
+                fasc = P.parse_fascicolo(head)
+                if fasc:
+                    info["fascicolo"] = fasc
                 return {**info, "formato": "pdf", "documento": pdf, "abstract": m["testo"][:2000],
                         "_testo": body}
         return {**info, "formato": "html", "_testo": m["testo"]}
@@ -627,6 +651,19 @@ async def _leggi(url: str) -> dict:
         return {**base, **extra, "formato": kind, "_testo": body}
     m = html_main(await fetch_text(url), url)
     return {**base, "titolo": m["titolo"], "data": m["data"], "formato": "html", "_testo": m["testo"]}
+
+
+def _index_meta(url: str) -> dict | None:
+    """Metadati dell'elemento con lo stesso URL negli indici (se presenti)."""
+    def k(u: str) -> str:
+        u = u.split("#")[0].replace("?out=print", "").replace("&out=print", "")
+        return u.replace("http://", "https://").rstrip("/")
+    target = k(url)
+    for ix in _indexes.values():
+        for it in ix.items:
+            if k(it.get("url", "")) == target:
+                return it
+    return None
 
 
 @mcp.tool()
@@ -649,6 +686,12 @@ async def leggi_contributo(url: str, da_carattere: int = 0,
             return {"url": url, "non_letto": True, "motivo": str(e)}
         except (httpx.HTTPError, ValueError) as e:
             return {"url": url, "errore": _err(e)}
+        meta = _index_meta(url)
+        if meta and "errore" not in res:
+            # gli elenchi della rivista danno titolo, autori e data più affidabili dei meta della pagina
+            for k in ("titolo", "autori", "data", "fascicolo", "data_decisione"):
+                if meta.get(k) and not (k == "titolo" and meta.get("dal_sitemap")):
+                    res[k] = meta[k]
         if "_testo" in res:
             _cache_put(key, res)
     out = {k: v for k, v in res.items() if k != "_testo"}

@@ -241,7 +241,17 @@ def test_parsers():
     rf = [a for a in arts if "51078" in a["url"]][0]
     assert rf["data"] == "2026-10-30" and rf["autori"] == ["Samuel Bolis"], rf
     cont = P.ap_parse_contenuti(AP_SECTION)
-    assert cont[0]["data"] == "2026-02-19", cont
+    assert cont[0]["data_decisione"] == "2026-02-19" and cont[0]["data"] is None, cont
+
+    # date nei titoli (decisioni, leggi, eventi) non vanno scambiate per date di pubblicazione
+    moro = ('<dl><dt><a href="/it/rivista/ultimi-contributi-pubblicati/daniele-piccione/discorso-moro">'
+            'Il discorso di Aldo Moro del 28 febbraio 1978</a></dt><dd>Estratto: legge 24 giugno 2024</dd></dl>')
+    assert P.aic_parse_list(moro)[0]["data"] is None
+    qg_old = ('<div><a href="/articolo/x">Commento alla legge 25 ottobre 1980</a> di '
+              '<a href="/autore/y">Di Mario Rossi</a> <span>02/11/2026</span></div>')
+    q = P.qg_parse_list(qg_old)[0]
+    assert q["data"] == "2026-11-02" and q["autori"] == ["Mario Rossi"], q
+    assert P.clean_title("F. Lazzarini | Titolo | Sistema Penale | SP") == "Titolo"
 
     assert P.ap_access(AP_OPEN)["open_access"] and "DownloadArticolo" in P.ap_access(AP_OPEN)["download"]
     paid = P.ap_access(AP_PAID)
